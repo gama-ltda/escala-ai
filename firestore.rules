@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Função para verificar se o usuário está autenticado
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Função para obter dados do perfil do usuário
+    function getUserProfile() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+    }
+    
+    // Função para verificar se o usuário é master_admin
+    function isMasterAdmin() {
+      return isAuthenticated() && getUserProfile().role == 'master_admin';
+    }
+    
+    // Função para verificar se o usuário é admin ou master_admin
+    function isAdmin() {
+      return isAuthenticated() && 
+             (getUserProfile().role == 'admin' || getUserProfile().role == 'master_admin');
+    }
+    
+    // Função para verificar se o usuário é o proprietário do documento
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Função para verificar se o usuário é admin da pelada
+    function isPeladaAdmin(peladaId) {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/peladas/$(peladaId)).data.adminId == request.auth.uid;
+    }
+
+    // PROFILES - Perfis de usuários
+    match /profiles/{userId} {
+      // Usuários podem ler e atualizar apenas seu próprio perfil
+      allow read, update: if isOwner(userId);
+      // Apenas o próprio usuário pode criar seu perfil (durante cadastro)
+      allow create: if isOwner(userId);
+      // Master admin pode ler e atualizar qualquer perfil
+      allow read, write: if isMasterAdmin();
+    }
+
+    // PELADAS - Peladas criadas pelos admins
+    match /peladas/{peladaId} {
+      // Admin proprietário pode fazer tudo
+      allow read, write: if isPeladaAdmin(peladaId);
+      // Master admin pode fazer tudo
+      allow read, write: if isMasterAdmin();
+      // Jogadores podem ler peladas (para se registrar)
+      allow read: if isAuthenticated();
+      // Apenas admins podem criar peladas
+      allow create: if isAdmin() && request.auth.uid == resource.data.adminId;
+    }
+
+    // PLAYERS - Jogadores registrados nas peladas
+    match /players/{playerId} {
+      // Admin da pelada pode fazer tudo
+      allow read, write: if isPeladaAdmin(resource.data.peladaId);
+      // Master admin pode fazer tudo
+      allow read, write: if isMasterAdmin();
+      // Jogadores podem se registrar (criar)
+      allow create: if isAuthenticated();
+      // Jogadores podem ler seus próprios dados
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    // GAMES - Jogos agendados
+    match /games/{gameId} {
+      // Admin da pelada pode fazer tudo
+      allow read, write: if isPeladaAdmin(resource.data.peladaId);
+      // Master admin pode fazer tudo
+      allow read, write: if isMasterAdmin();
+      // Jogadores aprovados podem ler jogos da pelada onde estão registrados
+      allow read: if isAuthenticated();
+      // Apenas admin da pelada pode criar jogos
+      allow create: if isAdmin() && request.auth.uid == resource.data.adminId;
+    }
+
+    // GAME_PLAYERS - Relação jogador-jogo
+    match /game_players/{gamePlayerId} {
+      // Admin do jogo pode fazer tudo
+      allow read, write: if isAuthenticated() && 
+                          isPeladaAdmin(get(/databases/$(database)/documents/games/$(resource.data.gameId)).data.peladaId);
+      // Master admin pode fazer tudo
+      allow read, write: if isMasterAdmin();
+      // Jogadores podem se registrar em jogos
+      allow create: if isAuthenticated();
+      // Jogadores podem ler seus próprios registros
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.playerId;
+      // Jogadores podem fazer check-in (atualizar checkedInOnDay)
+      allow update: if isAuthenticated() && 
+                    request.auth.uid == resource.data.playerId &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['checkedInOnDay', 'checkedInOnDayAt']);
+    }
+
+    // MATCHES - Partidas realizadas
+    match /matches/{matchId} {
+      // Admin do jogo pode fazer tudo
+      allow read, write: if isAuthenticated() && 
+                          isPeladaAdmin(get(/databases/$(database)/documents/games/$(resource.data.gameId)).data.peladaId);
+      // Master admin pode fazer tudo
+      allow read, write: if isMasterAdmin();
+      // Jogadores podem ler partidas dos jogos onde participam
+      allow read: if isAuthenticated();
+    }
+
+    // GOALS - Gols marcados nas partidas
+    match /goals/{goalId} {
+      // Admin do jogo pode fazer tudo
+      allow read, write: if isAuthenticated() && 
+                          isPeladaAdmin(
+                            get(/databases/$(database)/documents/games/$(
+                              get(/databases/$(database)/documents/matches/$(resource.data.matchId)).data.gameId
+                            )).data.peladaId
+                          );
+      // Master admin pode fazer tudo
+      allow read, write: if isMasterAdmin();
+      // Jogadores podem ler gols
+      allow read: if isAuthenticated();
+    }
+
+    // Regra padrão: negar acesso a tudo que não foi explicitamente permitido
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
